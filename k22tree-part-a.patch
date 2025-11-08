@@ -1,15 +1,16 @@
-From 8978470030a4914cbec3fb08c19b9215e3af76e4 Mon Sep 17 00:00:00 2001
+From 444b9060c761b83726ce6f3ff19231972715685b Mon Sep 17 00:00:00 2001
 From: sdi2100260 <sdi2100260@di.uoa.gr>
 Date: Sat, 8 Nov 2025 02:20:29 +0200
 Subject: [PATCH] k22tree: add syscall 467 + UAPI header + Makefile + x86 table
  (part A)
 
+Signed-off-by: sdi2100260 <sdi2100260@di.uoa.gr>
 ---
  arch/x86/entry/syscalls/syscall_64.tbl |  2 +-
- include/uapi/linux/k22info.h           | 18 ++++++++++++
- kernel/Makefile                        |  3 +-
- kernel/k22tree.c                       | 38 ++++++++++++++++++++++++++
- 4 files changed, 59 insertions(+), 2 deletions(-)
+ include/uapi/linux/k22info.h           | 18 +++++++++++++++++
+ kernel/Makefile                        |  6 ++++--
+ kernel/k22tree.c                       | 28 ++++++++++++++++++++++++++
+ 4 files changed, 51 insertions(+), 3 deletions(-)
  create mode 100644 include/uapi/linux/k22info.h
  create mode 100644 kernel/k22tree.c
 
@@ -51,63 +52,62 @@ index 000000000..7ca000290
 +
 +#endif /* _UAPI_LINUX_K22INFO_H */
 diff --git a/kernel/Makefile b/kernel/Makefile
-index 87866b037..3000a9952 100644
+index 87866b037..606c3260d 100644
 --- a/kernel/Makefile
 +++ b/kernel/Makefile
-@@ -10,7 +10,8 @@ obj-y     = fork.o exec_domain.o panic.o \
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
+ #
+-# Makefile for the linux kernel.
++# Makefile for the linux kernel
+ #
+ 
+ obj-y     = fork.o exec_domain.o panic.o \
+@@ -10,7 +10,9 @@ obj-y     = fork.o exec_domain.o panic.o \
  	    extable.o params.o \
  	    kthread.o sys_ni.o nsproxy.o \
  	    notifier.o ksysfs.o cred.o reboot.o \
 -	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o
 +	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o \
-+	    k22tree.o	
++	    k22tree.o
++
  
  obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
  obj-$(CONFIG_MULTIUSER) += groups.o
 diff --git a/kernel/k22tree.c b/kernel/k22tree.c
 new file mode 100644
-index 000000000..a9868d3ae
+index 000000000..549f000eb
 --- /dev/null
 +++ b/kernel/k22tree.c
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,28 @@
 +// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * k22tree - placeholder syscall (Part A)
-+ * This is just a implementation to verify that our syscall
-+ * is registered, linked, and callable from user space.
-+ */
-+
-+#include <linux/kernel.h>     // For printk()
-+#include <linux/syscalls.h>   // For SYSCALL_DEFINE macros
-+#include <linux/uaccess.h>    // For copy_from_user, copy_to_user
-+#include <linux/k22info.h>    // Our custom struct definition
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/uaccess.h>
++#include <linux/k22info.h>
 +
 +SYSCALL_DEFINE2(k22tree, struct k22info __user *, buf, int __user *, ne)
 +{
-+    int user_ne;
++	int user_ne;
 +
-+    // Check for invalid (NULL) user pointers
-+    if (!buf || !ne)
-+        return -EINVAL;
++	if (!buf || !ne)
++		return -EINVAL;
 +
-+    // Copy the integer value 'ne' from user space
-+    if (copy_from_user(&user_ne, ne, sizeof(user_ne)))
-+        return -EFAULT;
++	if (copy_from_user(&user_ne, ne, sizeof(user_ne)))
++		return -EFAULT;
 +
-+    // Check that the value makes sense
-+    if (user_ne < 1)
-+        return -EINVAL;
++	if (user_ne < 1)
++		return -EINVAL;
 +
-+    // For now, just reset it to zero (placeholder)
-+    user_ne = 0;
-+    if (copy_to_user(ne, &user_ne, sizeof(user_ne)))
-+        return -EFAULT;
++	user_ne = 0;
++	if (copy_to_user(ne, &user_ne, sizeof(user_ne)))
++		return -EFAULT;
 +
-+    // Print a kernel log message to confirm that the syscall works
-+    pr_info("k22tree placeholder invoked\n");
++	pr_info("k22tree placeholder invoked\n");
 +
-+    return 0;  // Temporary success
++	return 0;
 +}
++
 -- 
 2.48.1
 
