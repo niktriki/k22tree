@@ -1,0 +1,113 @@
+From 8978470030a4914cbec3fb08c19b9215e3af76e4 Mon Sep 17 00:00:00 2001
+From: sdi2100260 <sdi2100260@di.uoa.gr>
+Date: Sat, 8 Nov 2025 02:20:29 +0200
+Subject: [PATCH] k22tree: add syscall 467 + UAPI header + Makefile + x86 table
+ (part A)
+
+---
+ arch/x86/entry/syscalls/syscall_64.tbl |  2 +-
+ include/uapi/linux/k22info.h           | 18 ++++++++++++
+ kernel/Makefile                        |  3 +-
+ kernel/k22tree.c                       | 38 ++++++++++++++++++++++++++
+ 4 files changed, 59 insertions(+), 2 deletions(-)
+ create mode 100644 include/uapi/linux/k22info.h
+ create mode 100644 kernel/k22tree.c
+
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 5eb708bff..ff455665b 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -390,7 +390,7 @@
+ 464	common	getxattrat		sys_getxattrat
+ 465	common	listxattrat		sys_listxattrat
+ 466	common	removexattrat		sys_removexattrat
+-
++467	common	k22tree			sys_k22tree
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+ # in x32 as compared to native x86_64.  These syscalls have numbers 512-547.
+diff --git a/include/uapi/linux/k22info.h b/include/uapi/linux/k22info.h
+new file mode 100644
+index 000000000..7ca000290
+--- /dev/null
++++ b/include/uapi/linux/k22info.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_K22INFO_H
++#define _UAPI_LINUX_K22INFO_H
++
++#include <linux/types.h>
++
++struct k22info {
++    char comm[64];                  /* name of the executable */
++    pid_t pid;                      /* process ID */
++    pid_t parent_pid;               /* parent process ID */
++    pid_t first_child_pid;          /* PID of first child */
++    pid_t next_sibling_pid;         /* PID of next sibling */
++    unsigned long nvcsw;            /* number of voluntary context switches */
++    unsigned long nivcsw;           /* number of involuntary context switches */
++    unsigned long start_time;       /* monotonic start time in nanoseconds */
++};
++
++#endif /* _UAPI_LINUX_K22INFO_H */
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 87866b037..3000a9952 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,8 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+ 	    notifier.o ksysfs.o cred.o reboot.o \
+-	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o
++	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o \
++	    k22tree.o	
+ 
+ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+ obj-$(CONFIG_MULTIUSER) += groups.o
+diff --git a/kernel/k22tree.c b/kernel/k22tree.c
+new file mode 100644
+index 000000000..a9868d3ae
+--- /dev/null
++++ b/kernel/k22tree.c
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * k22tree - placeholder syscall (Part A)
++ * This is just a implementation to verify that our syscall
++ * is registered, linked, and callable from user space.
++ */
++
++#include <linux/kernel.h>     // For printk()
++#include <linux/syscalls.h>   // For SYSCALL_DEFINE macros
++#include <linux/uaccess.h>    // For copy_from_user, copy_to_user
++#include <linux/k22info.h>    // Our custom struct definition
++
++SYSCALL_DEFINE2(k22tree, struct k22info __user *, buf, int __user *, ne)
++{
++    int user_ne;
++
++    // Check for invalid (NULL) user pointers
++    if (!buf || !ne)
++        return -EINVAL;
++
++    // Copy the integer value 'ne' from user space
++    if (copy_from_user(&user_ne, ne, sizeof(user_ne)))
++        return -EFAULT;
++
++    // Check that the value makes sense
++    if (user_ne < 1)
++        return -EINVAL;
++
++    // For now, just reset it to zero (placeholder)
++    user_ne = 0;
++    if (copy_to_user(ne, &user_ne, sizeof(user_ne)))
++        return -EFAULT;
++
++    // Print a kernel log message to confirm that the syscall works
++    pr_info("k22tree placeholder invoked\n");
++
++    return 0;  // Temporary success
++}
+-- 
+2.48.1
+
