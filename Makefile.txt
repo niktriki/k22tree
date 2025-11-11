@@ -1,0 +1,10 @@
+CC = gcc
+CFLAGS = -Wall -O2
+
+all: test_k22tree
+
+test_k22tree: test_k22tree.c
+	$(CC) $(CFLAGS) -o test_k22tree test_k22tree.c
+
+clean:
+	rm -f test_k22tree
