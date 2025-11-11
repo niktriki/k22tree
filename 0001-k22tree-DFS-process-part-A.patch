@@ -1,0 +1,289 @@
+From 2cbd651d7efaa56775414c174f69ba59385e30ed Mon Sep 17 00:00:00 2001
+From: sdi2100260 <sdi2100260@di.uoa.gr>
+Date: Sat, 8 Nov 2025 02:20:29 +0200
+Subject: [PATCH] k22tree: DFS process (part A)
+
+Signed-off-by: sdi2100260 <sdi2100260@di.uoa.gr>
+---
+ arch/x86/entry/syscalls/syscall_64.tbl |   2 +-
+ include/uapi/linux/k22info.h           |  18 +++
+ kernel/Makefile                        |   6 +-
+ kernel/k22tree.c                       | 205 +++++++++++++++++++++++++
+ 4 files changed, 228 insertions(+), 3 deletions(-)
+ create mode 100644 include/uapi/linux/k22info.h
+ create mode 100644 kernel/k22tree.c
+
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 5eb708bff..ff455665b 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -390,7 +390,7 @@
+ 464	common	getxattrat		sys_getxattrat
+ 465	common	listxattrat		sys_listxattrat
+ 466	common	removexattrat		sys_removexattrat
+-
++467	common	k22tree			sys_k22tree
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+ # in x32 as compared to native x86_64.  These syscalls have numbers 512-547.
+diff --git a/include/uapi/linux/k22info.h b/include/uapi/linux/k22info.h
+new file mode 100644
+index 000000000..7ca000290
+--- /dev/null
++++ b/include/uapi/linux/k22info.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_K22INFO_H
++#define _UAPI_LINUX_K22INFO_H
++
++#include <linux/types.h>
++
++struct k22info {
++    char comm[64];                  /* name of the executable */
++    pid_t pid;                      /* process ID */
++    pid_t parent_pid;               /* parent process ID */
++    pid_t first_child_pid;          /* PID of first child */
++    pid_t next_sibling_pid;         /* PID of next sibling */
++    unsigned long nvcsw;            /* number of voluntary context switches */
++    unsigned long nivcsw;           /* number of involuntary context switches */
++    unsigned long start_time;       /* monotonic start time in nanoseconds */
++};
++
++#endif /* _UAPI_LINUX_K22INFO_H */
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 87866b037..606c3260d 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
+ #
+-# Makefile for the linux kernel.
++# Makefile for the linux kernel
+ #
+ 
+ obj-y     = fork.o exec_domain.o panic.o \
+@@ -10,7 +10,9 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+ 	    notifier.o ksysfs.o cred.o reboot.o \
+-	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o
++	    async.o range.o smpboot.o ucount.o regset.o ksyms_common.o \
++	    k22tree.o
++
+ 
+ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+ obj-$(CONFIG_MULTIUSER) += groups.o
+diff --git a/kernel/k22tree.c b/kernel/k22tree.c
+new file mode 100644
+index 000000000..6f7482334
+--- /dev/null
++++ b/kernel/k22tree.c
+@@ -0,0 +1,205 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/uaccess.h>
++#include <linux/sched/signal.h>   /* tasklist_lock, children, real_parent */
++#include <linux/k22info.h>
++#include <linux/slab.h>
++#include <linux/overflow.h>
++#include <linux/ktime.h>
++
++#define K22_HARD_CAP INT_MAX   /* sanity cap for *ne to avoid huge allocations */
++#define STMAX        65536     /* max nodes in the explicit DFS stack */
++
++/* Return the PID of the thread-group leader (i.e., the process). 0 on NULL */
++static inline pid_t leader_pid(struct task_struct *t)
++{
++	struct task_struct *p;
++
++	if (!t)
++		return 0;
++
++	p = t->group_leader ? t->group_leader : t;
++	return task_pid_nr(p);
++}
++
++/* First child that is itself a thread-group leader; NULL if none */
++static struct task_struct *first_child_leader(struct task_struct *parent)
++{
++	struct task_struct *ch;
++
++	list_for_each_entry(ch, &parent->children, sibling)
++		if (thread_group_leader(ch))
++			return ch;
++
++	return NULL;
++}
++
++/* Next sibling after “me” that is a leader; NULL if none */
++static struct task_struct *next_sibling_leader(struct task_struct *me)
++{
++	struct task_struct *sib;
++
++	if (!me->real_parent)
++		return NULL;
++
++	/* Walk until we find “me”, then continue */
++	list_for_each_entry(sib, &me->real_parent->children, sibling) {
++		if (sib == me)
++			goto after_me;
++	}
++	return NULL;
++
++after_me:
++	list_for_each_entry_continue(sib, &me->real_parent->children, sibling)
++		if (thread_group_leader(sib))
++			return sib;
++
++	return NULL;
++}
++
++/*
++ * Fill one k22info entry from a leader task_struct.
++ * Caller must hold tasklist_lock (read).
++ */
++static void fill_one(struct task_struct *t, struct k22info *o)
++{
++	struct task_struct *par, *child, *nsib;
++
++	get_task_comm(o->comm, t);
++	o->pid = task_pid_nr(t);
++
++	par = t->real_parent;
++	o->parent_pid = leader_pid(par);
++
++	child = first_child_leader(t);
++	o->first_child_pid = child ? task_pid_nr(child) : 0;
++
++	nsib = next_sibling_leader(t);
++	o->next_sibling_pid = nsib ? task_pid_nr(nsib) : 0;
++
++	/* Process-wide counters live in signal_struct */
++	if (t->signal) {
++		o->nvcsw  = READ_ONCE(t->signal->nvcsw);
++		o->nivcsw = READ_ONCE(t->signal->nivcsw);
++	} else {
++		o->nvcsw = 0;
++		o->nivcsw = 0;
++	}
++
++	/* Monotonic (since boot, excluding suspend), in ns */
++	o->start_time = ktime_to_ns(t->start_time);
++}
++
++/*
++ * Iterative pre-order DFS over leaders only.
++ * NOTE: We do not allocate here; the caller passes an explicit stack buffer.
++ */
++static void dfs_fill(struct task_struct *root,
++		     struct k22info *kbuf, int capacity,
++		     int *filled, int *total,
++		     struct task_struct **stack, int stcap)
++{
++	int top = -1;
++
++	if (!root || !stack || stcap <= 0)
++		return;
++
++	stack[++top] = root;
++
++	while (top >= 0) {
++		struct task_struct *t = stack[top--];
++
++		/* Record only process leaders (not individual threads) */
++		if (thread_group_leader(t)) {
++			struct k22info tmp;
++
++			fill_one(t, &tmp);
++			(*total)++;
++			if (*filled < capacity)
++				kbuf[(*filled)++] = tmp;
++		}
++
++		/*
++		 * Push children in reverse order so that the first child is
++		 * visited first when popping from the stack.  We avoid a
++		 * large on-stack temporary by using the reverse iterator.
++		 */
++		{
++			struct task_struct *c;
++
++			list_for_each_entry_reverse(c, &t->children, sibling) {
++				if (thread_group_leader(c)) {
++					if (top + 1 < stcap)
++						stack[++top] = c;
++					else
++						break; /* stack cap reached */
++				}
++			}
++		}
++	}
++}
++
++/*
++ * k22tree(buf, ne):
++ *  - returns the total number of processes in the system
++ *  - fills up to *ne entries in buf in pre-order DFS
++ *  - if everything fit (total <= *ne), writes total back to *ne
++ */
++SYSCALL_DEFINE2(k22tree, struct k22info __user *, buf, int __user *, ne)
++{
++	int user_ne, total = 0, filled = 0, capacity;
++	size_t bytes;
++	struct k22info *kbuf = NULL;
++	struct task_struct **stack = NULL;
++
++	/* Basic pointer validation and user_ne fetch */
++	if (!buf || !ne)
++		return -EINVAL;
++	if (copy_from_user(&user_ne, ne, sizeof(user_ne)))
++		return -EFAULT;
++	if (user_ne < 1)
++		return -EINVAL;
++
++	capacity = min(user_ne, K22_HARD_CAP);
++	if (check_mul_overflow((size_t)capacity, sizeof(*kbuf), &bytes))
++		return -EOVERFLOW;
++
++	/* Allocate outside of the lock */
++	kbuf = kvmalloc(bytes, GFP_KERNEL);
++	if (!kbuf)
++		return -ENOMEM;
++
++	stack = kvcalloc(STMAX, sizeof(*stack), GFP_KERNEL);
++	if (!stack) {
++		kvfree(kbuf);
++		return -ENOMEM;
++	}
++
++	/* Take a stable snapshot under the task list read lock */
++	read_lock(&tasklist_lock);
++	dfs_fill(&init_task, kbuf, capacity, &filled, &total, stack, STMAX);
++	read_unlock(&tasklist_lock);
++
++	/* Copy results to userspace after dropping the lock */
++	if (filled > 0) {
++		if (copy_to_user(buf, kbuf, filled * sizeof(*kbuf))) {
++			kvfree(stack);
++			kvfree(kbuf);
++			return -EFAULT;
++		}
++	}
++
++	/* If all entries fit, let userspace know the exact count */
++	if (total <= user_ne) {
++		if (copy_to_user(ne, &total, sizeof(total))) {
++			kvfree(stack);
++			kvfree(kbuf);
++			return -EFAULT;
++		}
++	}
++
++	kvfree(stack);
++	kvfree(kbuf);
++	return total;   /* total number of processes */
++}
+-- 
+2.48.1
+
